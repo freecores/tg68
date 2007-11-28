@@ -21,12 +21,15 @@
 ------------------------------------------------------------------------------
 ------------------------------------------------------------------------------
 --
+-- Revision 1.01 2007/11/28
+-- add MOVEP
+-- Bugfix Interrupt in MOVEQ
+--
 -- Revision 1.0 2007/11/05
 -- Clean up code and first release
 --
 -- known bugs/todo:
 -- Add CHK INSTRUCTION
--- Add MOVEP INSTRUCTION
 -- full decode ILLEGAL INSTRUCTIONS
 -- Add FDC Output
 -- add odd Address test
@@ -99,7 +102,7 @@ BEGIN
 
 TG68_fast_inst: TG68_fast
 	PORT MAP (
-		clk => not clk, 		-- : in std_logic;
+		clk => not clk, 			-- : in std_logic;
         reset => reset, 		-- : in std_logic;
         clkena_in => clkena, 	-- : in std_logic;
         data_in => data_in, 	-- : in std_logic_vector(15 downto 0);
