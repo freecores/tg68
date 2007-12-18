@@ -22,6 +22,9 @@
 ------------------------------------------------------------------------------
 --
 --
+-- Revision 1.02 2007/12/17
+-- Bugfix jsr  nn.w
+--
 -- Revision 1.01 2007/11/28
 -- add MOVEP
 -- Bugfix Interrupt in MOVEQ
@@ -391,14 +394,10 @@ END PROCESS;
 -----------------------------------------------------------------------------
 -- MEM_IO 
 -----------------------------------------------------------------------------
---PROCESS (clk, reset, clkena_in, opcode, rIPL_nr, longread, get_extendedOPC, trap_illegal, z_error, trap_trapv, trap_priv, trap_1010, trap_1111, trap_trap,
---         memaddr, memaddr_a, set_mem_addsub, movem_presub, movem_busy, state, PCmarker, execOPC, datatype, setdisp, setdispbrief, briefext, setdispbyte, brief,
---         trap_vector, interrupt, set_mem_rega, reg_QA, setaddrlong, data_read, decodeOPC, TG68_PC, data_in, long_done, last_data_read, mem_byte,
---         data_write_tmp, addsub_q, set_vectoraddr)
 PROCESS (clk, reset, clkena_in, opcode, rIPL_nr, longread, get_extendedOPC, memaddr, memaddr_a, set_mem_addsub, movem_presub, 
          movem_busy, state, PCmarker, execOPC, datatype, setdisp, setdispbrief, briefext, setdispbyte, brief,
          set_mem_rega, reg_QA, setaddrlong, data_read, decodeOPC, TG68_PC, data_in, long_done, last_data_read, mem_byte,
-         data_write_tmp, addsub_q, set_vectoraddr)
+         data_write_tmp, addsub_q, set_vectoraddr, trap_vector, interrupt)
 	BEGIN
 		clkena <= clkena_in AND NOT longread AND NOT get_extendedOPC;
 		
@@ -544,13 +543,13 @@ process (clk, brief, OP1out)
 		END IF;
 		IF rising_edge(clk) THEN
         	IF clkena='1' THEN
---				briefext <= OP1outbrief&OP1out(15 downto 0);
-				CASE brief(10 downto 9) IS
-					WHEN "00" => briefext <= OP1outbrief&OP1out(15 downto 0);
-					WHEN "01" => briefext <= OP1outbrief(14 downto 0)&OP1out(15 downto 0)&'0';
-					WHEN "10" => briefext <= OP1outbrief(13 downto 0)&OP1out(15 downto 0)&"00";
-					WHEN "11" => briefext <= OP1outbrief(12 downto 0)&OP1out(15 downto 0)&"000";
-				END CASE;
+				briefext <= OP1outbrief&OP1out(15 downto 0);
+--				CASE brief(10 downto 9) IS
+--					WHEN "00" => briefext <= OP1outbrief&OP1out(15 downto 0);
+--					WHEN "01" => briefext <= OP1outbrief(14 downto 0)&OP1out(15 downto 0)&'0';
+--					WHEN "10" => briefext <= OP1outbrief(13 downto 0)&OP1out(15 downto 0)&"00";
+--					WHEN "11" => briefext <= OP1outbrief(12 downto 0)&OP1out(15 downto 0)&"000";
+--				END CASE;
         	end if;
       	end if;
    end process;
@@ -916,7 +915,8 @@ PROCESS (opcode, Flags, movem_addr, movem_presub, movem_regaddr, source_lowbits,
 -----------------------------------------------------------------------------
 -- set OP2
 -----------------------------------------------------------------------------
-PROCESS (OP2out, reg_QB, opcode, datatype, OP2out_one, exec_EXT, exec_MOVEQ, EXEC_ADDQ, use_direct_data, data_write_tmp, ea_data_OP1, set_store_in_tmp, ea_data)
+PROCESS (OP2out, reg_QB, opcode, datatype, OP2out_one, exec_EXT, exec_MOVEQ, EXEC_ADDQ, use_direct_data, data_write_tmp, 
+	     ea_data_OP1, set_store_in_tmp, ea_data, movepl)
 	BEGIN
 		OP2out(15 downto 0) <= reg_QB(15 downto 0);
 		OP2out(31 downto 16) <= (OTHERS => OP2out(15));
@@ -1161,7 +1161,7 @@ PROCESS (clk, reset, opcode)
 -----------------------------------------------------------------------------
 PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefix, nextpass, condition, set_V_flag, trapmake, trapd, interrupt, trap_interrupt,
 	     Z_error, microaddr, c_in, rot_cnt, one_bit_in, bit_number_reg, bit_number, ea_only, get_ea_now, ea_build, datatype, exec_write_back, get_extendedOPC,
-	     Flags, SVmode, movem_addr, movem_busy, getbrief, set_exec_AND, set_exec_OR, set_exec_EOR, TG68_PC_dec)
+	     Flags, SVmode, movem_addr, movem_busy, getbrief, set_exec_AND, set_exec_OR, set_exec_EOR, TG68_PC_dec, c_out, OP1out)
 	BEGIN
 		TG68_PC_br8 <= '0';	
 		TG68_PC_brw <= '0';	
@@ -1886,7 +1886,7 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 										setstate <="01";
 									END IF;	
 									ea_to_pc <= '1';
-									IF opcode(5 downto 0)="111001" THEN
+									IF opcode(5 downto 1)="11100" THEN
 										writePC_add <= '1';
 									ELSE
 										writePC <= '1';
