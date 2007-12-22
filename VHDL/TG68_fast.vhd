@@ -22,6 +22,11 @@
 ------------------------------------------------------------------------------
 --
 --
+-- Revision 1.03 2007/12/21
+-- Thanks to Andreas Ehliar
+-- Split regfile to use blockram for registers
+-- insert "WHEN OTHERS => null;" on END CASE; 
+--
 -- Revision 1.02 2007/12/17
 -- Bugfix jsr  nn.w
 --
@@ -35,7 +40,7 @@
 -- known bugs/todo:
 -- Add CHK INSTRUCTION
 -- full decode ILLEGAL INSTRUCTIONS
--- Add FDC Output
+-- Add FC Output
 -- add odd Address test
 -- add TRACE
 -- Movem with regmask==x0000
@@ -327,11 +332,11 @@ architecture logic of TG68_fast is
 	signal Z_error 	      : std_logic;
 
 
-	type regfile_t is array(0 to 16) of std_logic_vector(31 downto 0);
-	signal regfile		  : regfile_t;
-	signal RWindex_A	  : integer range 0 to 16;
-	signal RWindex_B	  : integer range 0 to 16;
-
+	type regfile_t is array(0 to 16) of std_logic_vector(15 downto 0);
+	signal regfile_low	  : regfile_t;
+	signal regfile_high	  : regfile_t;
+ 	signal RWindex_A	  : integer range 0 to 16;
+ 	signal RWindex_B	  : integer range 0 to 16;
 BEGIN  
 
 -----------------------------------------------------------------------------
@@ -345,17 +350,17 @@ BEGIN
 	BEGIN
 		IF falling_edge(clk) THEN
 		    IF clkena='1' THEN
-				reg_QA <= regfile(RWindex_A);
-				reg_QB <= regfile(RWindex_B); 
+				reg_QA <= regfile_high(RWindex_A) & regfile_low(RWindex_A);
+				reg_QB <= regfile_high(RWindex_B) & regfile_low(RWindex_B); 
 			END IF;
 		END IF;
 		IF rising_edge(clk) THEN
 		    IF clkena='1' THEN
 				IF Lwrena='1' THEN
-					regfile(RWindex_A)(15 downto 0) <= registerin(15 downto 0);
+					regfile_low(RWindex_A) <= registerin(15 downto 0);
 				END IF;
 				IF Hwrena='1' THEN
-					regfile(RWindex_A)(31 downto 16) <= registerin(31 downto 16);
+					regfile_high(RWindex_A) <= registerin(31 downto 16);
 				END IF;
 			END IF;
 		END IF;
@@ -1635,7 +1640,7 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 							IF decodeOPC='1' THEN
 								ea_build <= '1';
 							END IF;
-							IF opcode(7downto 6)="11" THEN					--move from SR
+							IF opcode(7 downto 6)="11" THEN					--move from SR
 								set_exec_MOVESR <= '1';
 								datatype <= "01";
 								write_back <='1';							-- im 68000 wird auch erst gelesen
@@ -1658,7 +1663,7 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 								END IF;
 							END IF;
 						WHEN "001"=>
-							IF opcode(7downto 6)="11" THEN					--move from CCR 68010
+							IF opcode(7 downto 6)="11" THEN					--move from CCR 68010
 								trap_illegal <= '1';
 								trapmake <= '1';
 							ELSE											--clr
@@ -1678,7 +1683,7 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 							IF decodeOPC='1' THEN
 								ea_build <= '1';
 							END IF;
-							IF opcode(7downto 6)="11" THEN					--move to CCR
+							IF opcode(7 downto 6)="11" THEN					--move to CCR
 								set_exec_MOVE <= '1';
 								datatype <= "01";
 								IF execOPC='1' THEN
@@ -1698,7 +1703,7 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 								END IF;
 							END IF;
 						WHEN "011"=>										--not, move toSR
-							IF opcode(7downto 6)="11" THEN					--move to SR
+							IF opcode(7 downto 6)="11" THEN					--move to SR
 								IF SVmode='1' THEN
 									IF decodeOPC='1' THEN
 										ea_build <= '1';
@@ -2019,6 +2024,7 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 										trapmake <= '1';
 								END CASE;	
 							END IF;
+						WHEN OTHERS => null;
 					END CASE;
 				END IF;	
 					
@@ -2774,7 +2780,7 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 					set_exec_DIVU <= '1';
 
 
-				WHEN OTHERS =>
+				WHEN OTHERS => null;
 			END CASE;
 		END IF;
 	END PROCESS;
@@ -2801,6 +2807,7 @@ PROCESS (opcode, Flags)
 			WHEN X"d" => condition <= (Flags(3) AND NOT Flags(1)) OR (NOT Flags(3) AND Flags(1));
 			WHEN X"e" => condition <= (Flags(3) AND Flags(1) AND NOT Flags(2)) OR (NOT Flags(3) AND NOT Flags(1) AND NOT Flags(2));
 			WHEN X"f" => condition <= (Flags(3) AND NOT Flags(1)) OR (NOT Flags(3) AND Flags(1)) OR Flags(2);
+			WHEN OTHERS => null;
 		END CASE;
 	END PROCESS;
 
@@ -2818,6 +2825,7 @@ PROCESS (opcode, OP1out, OP2out, one_bit_in, one_bit_out, bit_Number, bit_number
 						one_bit_out <= '0';
 			WHEN "11" =>					--bset
 						one_bit_out <= '1';
+			WHEN OTHERS => null;			
 		END CASE;
 		
 		IF opcode(8)='0' THEN
@@ -2900,7 +2908,7 @@ PROCESS (opcode, OP1out, OP2out, one_bit_in, one_bit_out, bit_Number, bit_number
 							bits_out(30) <= one_bit_out;
 			WHEN "11111" => one_bit_in <= OP1out(31);
 							bits_out(31) <= one_bit_out;
-			WHEN OTHERS =>				
+			WHEN OTHERS =>	null;			
 		END CASE;
 	END PROCESS;
 
@@ -2916,6 +2924,7 @@ PROCESS (opcode, OP1out, Flags, rot_bits, rot_msb, rot_lsb, rot_rot, rot_nop)
 						rot_rot <= OP1out(15);
 			WHEN "10" =>					--Long
 						rot_rot <= OP1out(31);
+			WHEN OTHERS => null;
 		END CASE;
 	
 		CASE rot_bits IS
@@ -2931,6 +2940,7 @@ PROCESS (opcode, OP1out, Flags, rot_bits, rot_msb, rot_lsb, rot_rot, rot_nop)
 			WHEN "11" =>					--ROL, ROR
 						rot_lsb <= rot_rot;
 						rot_msb <= OP1out(0);
+			WHEN OTHERS => null;
 		END CASE;
 	
 		IF rot_nop='1' THEN
@@ -3124,6 +3134,7 @@ PROCESS (reset, clk, movem_mask, movem_muxa ,movem_muxb, movem_muxc)
 						WHEN "1101" => movem_mask(13) <= '0';
 						WHEN "1110" => movem_mask(14) <= '0';
 						WHEN "1111" => movem_mask(15) <= '0';
+						WHEN OTHERS => null;
 					END CASE;
 					IF opcode(10)='1' THEN
 						IF movem_bits="00010" OR movem_bits="00001" OR movem_bits="00000" THEN
