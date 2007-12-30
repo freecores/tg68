@@ -22,6 +22,10 @@
 ------------------------------------------------------------------------------
 --
 --
+-- Revision 1.04 2007/12/29
+-- size improvement
+-- change signal "microaddr" to one hot state machine
+--
 -- Revision 1.03 2007/12/21
 -- Thanks to Andreas Ehliar
 -- Split regfile to use blockram for registers
@@ -62,7 +66,7 @@ entity TG68_fast is
         state_out         : out std_logic_vector(1 downto 0);
         decodeOPC         : buffer std_logic;
 		wr				  : out std_logic;
-		UDS, LDS		  : out std_logic
+		UDS, LDS		  : out std_logic		
         );
 end TG68_fast;
 
@@ -93,7 +97,6 @@ architecture logic of TG68_fast is
    signal setdispbyte	  : std_logic;
    signal setdisp	      : std_logic;
    signal setdispbrief	  : std_logic;
-   signal prefix	      : std_logic;
    signal regdirectsource : std_logic;
    signal endOPC	      : std_logic;
    signal postadd	      : std_logic;
@@ -112,10 +115,6 @@ architecture logic of TG68_fast is
 
    signal last_data_read  : std_logic_vector(15 downto 0);
    signal data_read       : std_logic_vector(31 downto 0);
-   signal microaddr       : std_logic_vector(7 downto 0);
-   signal micronext       : std_logic_vector(7 downto 0);
-   signal microstep	      : std_logic;
-   signal microset	      : std_logic;
 
    signal registerin      : std_logic_vector(31 downto 0);
    signal reg_QA          : std_logic_vector(31 downto 0);
@@ -331,12 +330,22 @@ architecture logic of TG68_fast is
 	signal set_Z_error 	  : std_logic;
 	signal Z_error 	      : std_logic;
 
+	type micro_states is (idle, nop, ld_nn, st_nn, ld_dAn1, ld_dAn2, ld_AnXn1, ld_AnXn2, ld_AnXn3, st_dAn1, st_dAn2,
+						  st_AnXn1, st_AnXn2, st_AnXn3, bra1, bra2, bsr1, bsr2, dbcc1, dbcc2,
+						  movem, andi, op_AxAy, cmpm, link, int1, int2, int3, int4, rte, trap1, trap2, trap3,
+						  movep1, movep2, movep3, movep4, movep5, init1, init2,
+						  mul1, mul2, mul3, mul4, mul5, mul6, mul7, mul8, mul9, mul10, mul11, mul12, mul13, mul14, mul15,
+						  div1, div2, div3, div4, div5, div6, div7, div8, div9, div10, div11, div12, div13, div14, div15 );
+	signal micro_state		: micro_states;
+	signal next_micro_state		: micro_states;
 
 	type regfile_t is array(0 to 16) of std_logic_vector(15 downto 0);
 	signal regfile_low	  : regfile_t;
 	signal regfile_high	  : regfile_t;
  	signal RWindex_A	  : integer range 0 to 16;
  	signal RWindex_B	  : integer range 0 to 16;
+
+
 BEGIN  
 
 -----------------------------------------------------------------------------
@@ -708,7 +717,7 @@ process (clk, reset, opcode, TG68_PC, TG68_PC_dec, TG68_PC_br8, TG68_PC_brw, PC_
 				IF (decodeOPC OR execOPC)='1' THEN
 					rot_cnt <= set_rot_cnt;
 				END IF;
-				IF microstep='0' AND setstate_mux="00" AND (setnextpass='0' OR ea_only='1') AND endOPC='0' AND movem_busy='0' AND set_movem_busy='0' AND set_get_bitnumber='0' THEN
+				IF next_micro_state=idle AND setstate_mux="00" AND (setnextpass='0' OR ea_only='1') AND endOPC='0' AND movem_busy='0' AND set_movem_busy='0' AND set_get_bitnumber='0' THEN
 					nextpass <= '0';
 					IF (exec_write_back='0' OR state="11") AND set_rot_cnt="000001" THEN
 						endOPC <= '1';
@@ -1164,22 +1173,19 @@ PROCESS (clk, reset, opcode)
 -----------------------------------------------------------------------------
 -- execute opcode
 -----------------------------------------------------------------------------
-PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefix, nextpass, condition, set_V_flag, trapmake, trapd, interrupt, trap_interrupt,
-	     Z_error, microaddr, c_in, rot_cnt, one_bit_in, bit_number_reg, bit_number, ea_only, get_ea_now, ea_build, datatype, exec_write_back, get_extendedOPC,
-	     Flags, SVmode, movem_addr, movem_busy, getbrief, set_exec_AND, set_exec_OR, set_exec_EOR, TG68_PC_dec, c_out, OP1out)
+PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, nextpass, condition, set_V_flag, trapmake, trapd, interrupt, trap_interrupt,
+	     Z_error, c_in, rot_cnt, one_bit_in, bit_number_reg, bit_number, ea_only, get_ea_now, ea_build, datatype, exec_write_back, get_extendedOPC,
+	     Flags, SVmode, movem_addr, movem_busy, getbrief, set_exec_AND, set_exec_OR, set_exec_EOR, TG68_PC_dec, c_out, OP1out, micro_state)
 	BEGIN
 		TG68_PC_br8 <= '0';	
 		TG68_PC_brw <= '0';	
 		TG68_PC_nop <= '0';	
 		setstate <= "00";
 		Regwrena <= '0';
-		microstep <= '0';
-		microset <= '0';
 		postadd <= '0';
 		presub <= '0';
 		movem_presub <= '0';
 		setaddsub <= '1';
-		micronext <= "00000001";
 		setaddrlong <= '0';
 		setnextpass <= '0';
 		regdirectsource <= '0';
@@ -1268,6 +1274,7 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 		set_movepw <= '0';
 
 		trap_chk <= '0';
+		next_micro_state <= idle;
 
 ------------------------------------------------------------------------------
 --Sourcepass
@@ -1302,32 +1309,26 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 						regwrena <= '1';
 					END IF; 	
 				WHEN "101" =>				--(d16,An)
-					microstep <='1';
-					micronext <="00000110";
+					next_micro_state <= ld_dAn1;
 					setgetbrief <='1';
 					set_mem_regA <= '1';
 				WHEN "110" =>				--(d8,An,Xn)
-					microstep <='1';
-					micronext <="00001000";
+					next_micro_state <= ld_AnXn1;
 					setgetbrief <='1';
 					set_mem_regA <= '1';
 				WHEN "111" =>
 					CASE opcode(2 downto 0) IS
 						WHEN "000" =>				--(xxxx).w
-							micronext <="00000010";
-							microstep <='1';
+							next_micro_state <= ld_nn;
 						WHEN "001" =>				--(xxxx).l
 							longreaddirect <= '1';
-							micronext <="00000010";
-							microstep <='1';
+							next_micro_state <= ld_nn;
 						WHEN "010" =>				--(d16,PC)
-							microstep <='1';
-							micronext <="00000110";
+							next_micro_state <= ld_dAn1;
 							setgetbrief <= '1';
 							set_PCmarker <= '1';
 						WHEN "011" =>				--(d8,PC,Xn)
-							microstep <='1';
-							micronext <="00001000";
+							next_micro_state <= ld_AnXn1;
 							setgetbrief <= '1';
 							set_PCmarker <= '1';
 						WHEN "100" =>				--#data
@@ -1383,8 +1384,7 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 					IF opcode(7)='0' THEN
 						set_direct_data <= '1';
 					END IF;
-					microstep <='1';
-					micronext <="01010110";
+					next_micro_state <= movep1;
 					setgetbrief <='1';
 					set_mem_regA <= '1';
 				END IF;
@@ -1464,8 +1464,7 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 	--						IF (set_exec_AND OR set_exec_OR OR set_exec_ADD  	--ANDI, ORI, SUBI
 	--						   OR set_exec_EOR OR set_exec_CMP)='1' THEN	--ADDI, EORI, CMPI
 								
-								microstep <='1';
-								micronext <="00101000";
+								next_micro_state <= andi;
 								set_direct_data <= '1';
 								IF datatype="10" THEN
 									longreaddirect <= '1';
@@ -1525,7 +1524,7 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 					ea_build <= '1';
 				END IF;
 				
-				IF prefix='0' AND (nextpass='1' OR (opcode(5 downto 4)="00" AND decodeOPC='1')) THEN	
+				IF micro_state=idle AND (nextpass='1' OR (opcode(5 downto 4)="00" AND decodeOPC='1')) THEN	
 					CASE opcode(8 downto 6) IS		--destination
 --						WHEN "000" =>						--Dn
 --						WHEN "001" =>						--An
@@ -1551,26 +1550,22 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 								regwrena <= '1';
 							END IF; 
 							setstate <= "11";
-							microstep <='1';		--nop
+							next_micro_state <= nop;
 						WHEN "101" =>				--(d16,An)
-							microstep <='1';
-							micronext <="00001011";
+							next_micro_state <= st_dAn1;
 							set_mem_regA <= '1';
 							setgetbrief <= '1';
 						WHEN "110" =>				--(d8,An,Xn)
-							microstep <='1';
-							micronext <="00001110";
+							next_micro_state <= st_AnXn1;
 							set_mem_regA <= '1';
 							setgetbrief <= '1';
 						WHEN "111" =>
 							CASE opcode(11 downto 9) IS
 								WHEN "000" =>				--(xxxx).w
-									microstep <='1';
-									micronext <="00000011";
+									next_micro_state <= st_nn;
 								WHEN "001" =>				--(xxxx).l
 									longreaddirect <= '1';
-									microstep <='1';
-									micronext <="00000011";
+									next_micro_state <= st_nn;
 								WHEN OTHERS => 
 							END CASE;
 						WHEN OTHERS => 
@@ -1760,8 +1755,7 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 											IF opcode(10)='0' THEN
 												set_movem_busy <='1';
 											ELSE	
-												micronext <="00100010";
-												microstep <='1';
+												next_micro_state <= movem;
 											END IF;
 										ELSE	
 											ea_build <= '1';
@@ -1821,12 +1815,12 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 											IF decodeOPC='1' THEN
 												ea_build <= '1';
 											END IF;
-											IF nextpass='1' AND prefix='0' THEN
+											IF nextpass='1' AND micro_state=idle THEN
 												presub <= '1';
 												setstackaddr <='1';
 												set_mem_addsub <= '1';
 												setstate <="11";
-												microstep <='1';
+												next_micro_state <= nop;
 											END IF;
 											IF get_ea_now='1' THEN
 												setstate <="01";
@@ -1876,12 +1870,12 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 							IF opcode(7)='1' THEN		--jsr, jmp
 								datatype <= "10";
 								ea_only <= '1';
-								IF nextpass='1' AND prefix='0' THEN
+								IF nextpass='1' AND micro_state=idle THEN
 									presub <= '1';
 									setstackaddr <='1';
 									set_mem_addsub <= '1';
 									setstate <="11";
-									microstep <='1';
+									next_micro_state <= nop;
 								END IF;
 								IF decodeOPC='1' THEN
 									ea_build <= '1';
@@ -1906,8 +1900,7 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 									WHEN "1010000"|"1010001"|"1010010"|"1010011"|"1010100"|"1010101"|"1010110"|"1010111" =>		--link
 										datatype <= "10";
 										IF decodeOPC='1' THEN
-											micronext <="01000000";
-											microstep <='1';
+											next_micro_state <= link;
 											set_exec_MOVE <= '1';						--für displacement
 											presub <= '1';
 											setstackaddr <='1';
@@ -1994,8 +1987,7 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 												setstackaddr <= '1';
 												set_mem_rega <= '1';
 												set_directSR <= '1';	
-												microstep <='1';
-												micronext <= "01001000";
+												next_micro_state <= rte;
 											END IF;
 										ELSE
 											trap_priv <= '1';
@@ -2010,7 +2002,7 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 											setstackaddr <= '1';
 											set_mem_rega <= '1';
 											set_directPC <= '1';	
-											microstep <='1';
+											next_micro_state <= nop;
 										END IF;
 										
 									WHEN "1110110" =>  									--trapv
@@ -2035,15 +2027,15 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 						IF opcode(5 downto 3)="001" THEN --dbcc
 							datatype <= "01";			--Word
 							IF decodeOPC='1' THEN
+								next_micro_state <= nop;
 								OP2out_one <= '1';
 								IF condition='0' THEN
 									Regwrena <= '1';
 									IF c_in(2)='1' THEN
-										micronext <="00011110";
+										next_micro_state <= dbcc1;
 									END IF;	
 								END IF;
 								data_is_source <= '1';
-								microstep <='1';
 							END IF;
 						ELSE				--Scc
 							datatype <= "00";			--Byte
@@ -2091,22 +2083,20 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 			WHEN "0110" =>				--bra,bsr,bcc
 				datatype <= "10";
 				
-				IF prefix='0' THEN
+				IF micro_state=idle THEN
 					IF opcode(11 downto 8)="0001" THEN		--bsr
 						IF opcode(7 downto 0)="00000000" THEN
-							micronext <="00011000";
+							next_micro_state <= bsr1;
 						ELSE	
-							micronext <="00011001";
+							next_micro_state <= bsr2;
 							setstate <= "01";
 						END IF;
-						microstep <='1';
 						presub <= '1';
 						setstackaddr <='1';
 						set_mem_addsub <= '1';
 					ELSE									--bra
 						IF opcode(7 downto 0)="00000000" THEN
-							microstep <='1';
-							micronext <="00010010";
+							next_micro_state <= bra1;
 						END IF;
 						IF condition='1' THEN
 							TG68_PC_br8 <= '1';
@@ -2135,11 +2125,10 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 					IF opcode(5 downto 4)="00" THEN	--Dn, An
 						regdirectsource <= '1';
 					END IF;
-					IF (prefix='0' AND nextpass='1') OR (opcode(5 downto 4)="00" AND decodeOPC='1') THEN	
+					IF (micro_state=idle AND nextpass='1') OR (opcode(5 downto 4)="00" AND decodeOPC='1') THEN	
 						set_exec_DIVU <= '1';
 						setstate <="01";
-						microstep <='1';
-						micronext <="10100000";
+						next_micro_state <= div1;
 					END IF;
 					IF decodeOPC='1' THEN
 						ea_build <= '1';
@@ -2147,7 +2136,7 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 					IF execOPC='1' AND z_error='0' AND set_V_Flag='0' THEN
 						regwrena <= '1';
 					END IF;
-					IF (prefix='1' AND nextpass='1') OR execOPC='1' THEN
+					IF (micro_state/=idle AND nextpass='1') OR execOPC='1' THEN
 						dest_hbits <= '1';
 						source_lowbits <='1';
 					ELSE									
@@ -2167,8 +2156,7 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 								setstate <= "10";
 								set_mem_addsub <= '1';
 								presub <= '1';
-								microstep <='1';
-								micronext <="00110000";
+								next_micro_state <= op_AxAy;
 							END IF;
 						END IF;
 						IF execOPC='1' THEN
@@ -2233,8 +2221,7 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 							setstate <= "10";
 							set_mem_addsub <= '1';
 							presub <= '1';
-							microstep <='1';
-							micronext <="00110000";
+							next_micro_state <= op_AxAy;
 						END IF;
 					END IF;
 					IF execOPC='1' THEN
@@ -2289,8 +2276,7 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 						setstate <= "10";
 						set_mem_rega <= '1';
 						postadd <= '1';
-						microstep <='1';
-						micronext <="00110010";
+						next_micro_state <= cmpm;
 					END IF;
 					IF execOPC='1' THEN
 						ea_data_OP1 <= '1';
@@ -2330,11 +2316,10 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 					IF opcode(5 downto 4)="00" THEN	--Dn, An
 						regdirectsource <= '1';
 					END IF;
-					IF (prefix='0' AND nextpass='1') OR (opcode(5 downto 4)="00" AND decodeOPC='1') THEN	
+					IF (micro_state=idle AND nextpass='1') OR (opcode(5 downto 4)="00" AND decodeOPC='1') THEN	
 						set_exec_MULU <= '1';
 						setstate <="01";
-						microstep <='1';
-						micronext <="10000000";
+						next_micro_state <= mul1;
 					END IF;
 					IF decodeOPC='1' THEN
 						ea_build <= '1';
@@ -2342,7 +2327,7 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 					IF	execOPC='1' THEN
 						regwrena <= '1';
 					END IF;
-					IF (prefix='1' AND nextpass='1') OR execOPC='1' THEN
+					IF (micro_state/=idle AND nextpass='1') OR execOPC='1' THEN
 						dest_hbits <= '1';
 						source_lowbits <='1';
 					ELSE									
@@ -2362,8 +2347,7 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 								setstate <= "10";
 								set_mem_addsub <= '1';
 								presub <= '1';
-								microstep <='1';
-								micronext <="00110000";
+								next_micro_state <= op_AxAy;
 							END IF;
 						END IF;
 						IF execOPC='1' THEN
@@ -2469,19 +2453,17 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 -----------------------------------------------------------------------------
 -- execute microcode
 -----------------------------------------------------------------------------
---PROCESS (microaddr)
+--PROCESS (micro_state)
 --	BEGIN
 		IF Z_error='1'  THEN		-- divu by zero
 			trapmake <= '1';			--wichtig für USP
 			IF trapd='0' THEN
 				writePC <= '1';
-				microset <= '1';
 			END IF;			
 		END IF;	
 		
 		IF trapmake='1' AND trapd='0' THEN
-			microstep <= '1';
-			micronext <= "01010000";
+			next_micro_state <= trap1;
 			presub <= '1';
 			setstackaddr <='1';
 			set_mem_addsub <= '1';
@@ -2490,103 +2472,94 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 		END IF;	
 		
 		IF interrupt='1' THEN
-			microstep <= '1';
-			micronext <= "01000100";
+			next_micro_state <= int1;
 			setstate <= "10";
 --			datatype <= "01";		--wirkt sich auf Flags aus
 		END IF;	
 
-
 		IF reset='0' THEN
-			microaddr <= "01100000";		--init
-			prefix <= '1';
+			micro_state <= init1;
 		ELSIF rising_edge(clk) THEN
 	        IF clkena='1' THEN
 				trapd <= trapmake;
-				prefix <= (prefix AND ea_build) OR (microstep AND NOT fetchOPC);
-				IF prefix='1' AND ea_build='0' AND microset='0' THEN
-					microaddr <= microaddr + micronext;
+				IF fetchOPC='1' THEN
+					micro_state <= idle;
 				ELSE
-					microaddr <= micronext;
+					micro_state <= next_micro_state;
 				END IF;	
 			END IF;
 		END IF;
-		IF prefix='1' THEN
-			CASE microaddr IS
-				WHEN "00000001" =>		-- nop
-				
-				WHEN "00000010" =>		-- (nnnn).w/l=>
+			CASE micro_state IS
+				WHEN ld_nn =>		-- (nnnn).w/l=>
 					get_ea_now <='1';
 					setnextpass <= '1';
 					setaddrlong <= '1';
 					
-				WHEN "00000011" =>		-- =>(nnnn).w/l
+				WHEN st_nn =>		-- =>(nnnn).w/l
 					setstate <= "11";
 					setaddrlong <= '1';
-					microstep <='1';
-									
-				WHEN "00000110" =>		-- d(An)=>, --d(PC)=>
-					microstep <='1';
+					next_micro_state <= nop;
+					
+				WHEN ld_dAn1 =>		-- d(An)=>, --d(PC)=>
 					setstate <= "01";
-				WHEN "00000111" =>		-- d(An)=>, --d(PC)=>
+					next_micro_state <= ld_dAn2;
+				WHEN ld_dAn2 =>		-- d(An)=>, --d(PC)=>
 					get_ea_now <='1';
 					setdisp <= '1';		--word
 					setnextpass <= '1';
 					
-				WHEN "00001000" =>		-- d(An,Xn)=>, --d(PC,Xn)=>
-					microstep <='1';
+				WHEN ld_AnXn1 =>		-- d(An,Xn)=>, --d(PC,Xn)=>
 					setstate <= "01";
-				WHEN "00001001" =>		-- d(An,Xn)=>, --d(PC,Xn)=>
+					next_micro_state <= ld_AnXn2;
+				WHEN ld_AnXn2 =>		-- d(An,Xn)=>, --d(PC,Xn)=>
 					setdisp <= '1';		--byte	
 					setdispbyte <= '1';
-					microstep <='1';
 					setstate <= "01";
 					setbriefext <= '1';
-				WHEN "00001010" =>
+					next_micro_state <= ld_AnXn3;
+				WHEN ld_AnXn3 =>
 					get_ea_now <='1';
 					setdisp <= '1';		--brief
 					setdispbrief <= '1';
 					setnextpass <= '1';
 					
-				WHEN "00001011" =>		-- =>d(An)
-					microstep <='1';
+				WHEN st_dAn1 =>		-- =>d(An)
 					setstate <= "01";
-				WHEN "00001100" =>		-- =>d(An)
+					next_micro_state <= st_dAn2;
+				WHEN st_dAn2 =>		-- =>d(An)
 					setstate <= "11";
 					setdisp <= '1';		--word
-					microstep <='1';
-				WHEN "00001101" =>
+					next_micro_state <= nop;
 					
-				WHEN "00001110" =>		-- =>d(An,Xn)
-					microstep <='1';
+				WHEN st_AnXn1 =>		-- =>d(An,Xn)
 					setstate <= "01";
-				WHEN "00001111" =>		-- =>d(An,Xn)
+					next_micro_state <= st_AnXn2;
+				WHEN st_AnXn2 =>		-- =>d(An,Xn)
 					setdisp <= '1';		--byte
 					setdispbyte <= '1';
-					microstep <='1';
 					setstate <= "01";
 					setbriefext <= '1';
-				WHEN "00010000" =>
+					next_micro_state <= st_AnXn3;
+				WHEN st_AnXn3 =>
 					setstate <= "11";
 					setdisp <= '1';		--brief	
 					setdispbrief <= '1';
-					microstep <='1';
-				WHEN "00010001" =>
+					next_micro_state <= nop;
 					
-				WHEN "00010010" =>		--bra
+				WHEN bra1 =>		--bra
 					IF condition='1' THEN
 						TG68_PC_br8 <= '1';	--pc+0000
-						microstep <='1';
 						setstate <= "01";
+						next_micro_state <= bra2;
 					END IF;
-				WHEN "00010011" =>		--bra
+				WHEN bra2 =>		--bra
 					TG68_PC_brw <= '1';	
-				
-				WHEN "00011000" =>		--bsr
+					
+				WHEN bsr1 =>		--bsr
 					set_TG68_PC_dec <= '1';		--in 2 Takten -2
-					microstep <='1';
 					setstate <= "01";
-				WHEN "00011001" =>		--bsr
+					next_micro_state <= bsr2;
+				WHEN bsr2 =>		--bsr
 					IF TG68_PC_dec(0)='1' THEN
 						TG68_PC_brw <= '1';	
 					ELSE
@@ -2594,111 +2567,102 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 					END IF;	
 					writePC <= '1';
 					setstate <= "11";
-					microstep <='1';
-				WHEN "00011010" =>		--bsr
+					next_micro_state <= nop;
 
-				WHEN "00011110" =>		--dbcc
+				WHEN dbcc1 =>		--dbcc
 					TG68_PC_nop <= '1';	
-					microstep <='1';
 					setstate <= "01";
-				WHEN "00011111" =>		--dbcc
+					next_micro_state <= dbcc2;
+				WHEN dbcc2 =>		--dbcc
 					TG68_PC_brw <= '1';	
 				
-				WHEN "00100010" =>		--movem
+				WHEN movem =>		--movem
 					set_movem_busy <='1';
 					setstate <= "10";
 
-				WHEN "00101000" =>		--andi
+				WHEN andi =>		--andi
 					IF opcode(5 downto 4)/="00" THEN
 						ea_build <= '1';
 						setnextpass <= '1';
 					END IF;
 
-				WHEN "00101100" =>		--jsr
-					presub <= '1';
-					setstackaddr <='1';
-					set_mem_addsub <= '1';
-					setstate <= "11";
-
-				WHEN "00110000" =>		-- op -(Ax),-(Ay)
+				WHEN op_AxAy =>		-- op -(Ax),-(Ay)
 					presub <= '1';
 					dest_hbits <= '1'; 
 					dest_areg <= '1';
 					set_mem_addsub <= '1';
 					setstate <= "10";
 
-				WHEN "00110010" =>		-- cmpm (Ay)+,(Ax)+
+				WHEN cmpm =>		-- cmpm (Ay)+,(Ax)+
 					postadd <= '1';
 					dest_hbits <= '1'; 
 					dest_areg <= '1';
 					set_mem_rega <= '1';
 					setstate <= "10";
 					
-				WHEN "01000000" =>		-- link
+				WHEN link =>		-- link
 					setstate <="11";
 					save_memaddr <= '1';
 					regwrena <= '1';
 					
-				WHEN "01000100" =>		-- interrupt
-					microstep <= '1';
+				WHEN int1 =>		-- interrupt
 					presub <= '1';
 					setstackaddr <='1';
 					set_mem_addsub <= '1';
 					setstate <= "11";
 					datatype <= "10";
-				WHEN "01000101" =>		-- interrupt
-					microstep <= '1';
+					next_micro_state <= int2;
+				WHEN int2 =>		-- interrupt
 					presub <= '1';
 					setstackaddr <='1';
 					set_mem_addsub <= '1';
 					setstate <= "11";
 					datatype <= "01";
 					writeSR <= '1';
-				WHEN "01000110" =>		-- interrupt
+					next_micro_state <= int3;
+				WHEN int3 =>		-- interrupt
 					set_vectoraddr <= '1';
 					datatype <= "10";
 					set_directPC <= '1';	
-					microstep <='1';
-
 					setstate <= "10";
-				WHEN "01000111" =>		-- interrupt
+					next_micro_state <= int4;
+				WHEN int4 =>		-- interrupt
 					datatype <= "10";
 
-				WHEN "01001000" =>		-- RTE
+				WHEN rte =>		-- RTE
 					datatype <= "10";
 					setstate <= "10";
 					postadd <= '1';
 					setstackaddr <= '1';
 					set_mem_rega <= '1';
 					set_directPC <= '1';	
-					microstep <='1';
+					next_micro_state <= nop;
 
-				WHEN "01010000" =>		-- TRAP
-					microstep <= '1';
+				WHEN trap1 =>		-- TRAP
 					presub <= '1';
 					setstackaddr <='1';
 					set_mem_addsub <= '1';
 					setstate <= "11";
 					datatype <= "01";
 					writeSR <= '1';
-				WHEN "01010001" =>		-- TRAP
+					next_micro_state <= trap2;
+				WHEN trap2 =>		-- TRAP
 					set_vectoraddr <= '1';
 					datatype <= "10";
 					set_directPC <= '1';	
-					microstep <='1';
 --					longreaddirect <= '1';
 					setstate <= "10";
-				WHEN "01010010" =>		-- TRAP
+					next_micro_state <= trap3;
+				WHEN trap3 =>		-- TRAP
 					datatype <= "10";
-				
-				WHEN "01010110" =>		-- MOVEP d(An)
-					microstep <='1';
+					
+				WHEN movep1 =>		-- MOVEP d(An)
 					setstate <= "01";
 					IF opcode(6)='1' THEN
 						set_movepl <= '1';
 					END IF;
-				WHEN "01010111" =>		
-					microstep <='1';
+					next_micro_state <= movep2;
+				WHEN movep2 =>		
 					setdisp <= '1';		
 					IF opcode(7)='0' THEN
 						setstate <= "10";
@@ -2706,83 +2670,169 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, prefi
 						setstate <= "11";
 						wait_mem_byte <= '1';
 					END IF;
-				WHEN "01011000" =>		
+					next_micro_state <= movep3;
+				WHEN movep3 =>		
 					IF opcode(6)='1' THEN
-						microstep <='1';
 						set_movepw <= '1';
+						next_micro_state <= movep4;
 					END IF;
 					IF opcode(7)='0' THEN
 						setstate <= "10";
 					ELSE
 						setstate <= "11";
 					END IF;
-				WHEN "01011001" =>		
-					microstep <='1';
-
+				WHEN movep4 =>		
 					IF opcode(7)='0' THEN
 						setstate <= "10";
 					ELSE
 						wait_mem_byte <= '1';
 						setstate <= "11";
 					END IF;
-				WHEN "01011010" =>		
+					next_micro_state <= movep5;
+				WHEN movep5 =>		
 					IF opcode(7)='0' THEN
 						setstate <= "10";
 					ELSE
 						setstate <= "11";
 					END IF;
-
-				
-
-				
-				
-				WHEN "01100000" =>		-- init SP
-					microstep <='1';
+					
+				WHEN init1 =>		-- init SP
 					longreaddirect <= '1';
-				WHEN "01100001" =>		-- init PC
+					next_micro_state <= init2;
+				WHEN init2 =>		-- init PC
 					get_ea_now <='1';	--\
 					ea_only <= '1';		---  OP1in <= memaddr_in
 					setaddrlong <= '1';	--   memaddr_in <= data_read
 					regwrena <= '1';
 					setstackaddr <='1';	--   dest_addr <= SP
 					set_directPC <= '1';	
-					microstep <='1';
 					longreaddirect <= '1';
---				WHEN "01100010" =>		-- wr SP
-				
-				
-				
-				
-				WHEN "10000000"|"10000001"|"10000010"|"10000011"|"10000100"|"10000101"|"10000110"| 
-					 "10000111"|"10001000"|"10001001"|"10001010"|"10001011"|"10001100"|"10001101"	=>		-- mulu
-					microstep <='1';
+					next_micro_state <= nop;
+
+				WHEN mul1	=>		-- mulu
 					set_exec_MULU <= '1';
 					setstate <="01";
-				WHEN "10001110"	=>		-- mulu
+					next_micro_state <= mul2;
+				WHEN mul2	=>		-- mulu
+					set_exec_MULU <= '1';
+					setstate <="01";
+					next_micro_state <= mul3;
+				WHEN mul3	=>		-- mulu
+					set_exec_MULU <= '1';
+					setstate <="01";
+					next_micro_state <= mul4;
+				WHEN mul4	=>		-- mulu
+					set_exec_MULU <= '1';
+					setstate <="01";
+					next_micro_state <= mul5;
+				WHEN mul5	=>		-- mulu
+					set_exec_MULU <= '1';
+					setstate <="01";
+					next_micro_state <= mul6;
+				WHEN mul6	=>		-- mulu
+					set_exec_MULU <= '1';
+					setstate <="01";
+					next_micro_state <= mul7;
+				WHEN mul7	=>		-- mulu
+					set_exec_MULU <= '1';
+					setstate <="01";
+					next_micro_state <= mul8;
+				WHEN mul8	=>		-- mulu
+					set_exec_MULU <= '1';
+					setstate <="01";
+					next_micro_state <= mul9;
+				WHEN mul9	=>		-- mulu
+					set_exec_MULU <= '1';
+					setstate <="01";
+					next_micro_state <= mul10;
+				WHEN mul10	=>		-- mulu
+					set_exec_MULU <= '1';
+					setstate <="01";
+					next_micro_state <= mul11;
+				WHEN mul11	=>		-- mulu
+					set_exec_MULU <= '1';
+					setstate <="01";
+					next_micro_state <= mul12;
+				WHEN mul12	=>		-- mulu
+					set_exec_MULU <= '1';
+					setstate <="01";
+					next_micro_state <= mul13;
+				WHEN mul13	=>		-- mulu
+					set_exec_MULU <= '1';
+					setstate <="01";
+					next_micro_state <= mul14;
+				WHEN mul14	=>		-- mulu
+					set_exec_MULU <= '1';
+					setstate <="01";
+					next_micro_state <= mul15;
+				WHEN mul15	=>		-- mulu
 					set_exec_MULU <= '1';
 
-
-				WHEN "10100000" =>		-- divu
+				WHEN div1 =>		-- divu
 					IF OP2out(15 downto 0)=x"0000" THEN		--div zero
 						set_Z_error <= '1';
-						microset <= '1';
 					ELSE
 						set_exec_DIVU <= '1';
+						next_micro_state <= div2;
 					END IF;
 					setstate <="01";
-					microstep <='1';
-				WHEN "10100001"|"10100010"|"10100011"|"10100100"|"10100101"|"10100110"|"10100111"| 
-					 "10101000"|"10101001"|"10101010"|"10101011"|"10101100"|"10101101" =>		-- divu
-					microstep <='1';
+				WHEN div2	=>		-- divu
 					set_exec_DIVU <= '1';
 					setstate <="01";
-				WHEN "10101110"	=>		-- divu
+					next_micro_state <= div3;
+				WHEN div3	=>		-- divu
 					set_exec_DIVU <= '1';
-
+					setstate <="01";
+					next_micro_state <= div4;
+				WHEN div4	=>		-- divu
+					set_exec_DIVU <= '1';
+					setstate <="01";
+					next_micro_state <= div5;
+				WHEN div5	=>		-- divu
+					set_exec_DIVU <= '1';
+					setstate <="01";
+					next_micro_state <= div6;
+				WHEN div6	=>		-- divu
+					set_exec_DIVU <= '1';
+					setstate <="01";
+					next_micro_state <= div7;
+				WHEN div7	=>		-- divu
+					set_exec_DIVU <= '1';
+					setstate <="01";
+					next_micro_state <= div8;
+				WHEN div8	=>		-- divu
+					set_exec_DIVU <= '1';
+					setstate <="01";
+					next_micro_state <= div9;
+				WHEN div9	=>		-- divu
+					set_exec_DIVU <= '1';
+					setstate <="01";
+					next_micro_state <= div10;
+				WHEN div10	=>		-- divu
+					set_exec_DIVU <= '1';
+					setstate <="01";
+					next_micro_state <= div11;
+				WHEN div11	=>		-- divu
+					set_exec_DIVU <= '1';
+					setstate <="01";
+					next_micro_state <= div12;
+				WHEN div12	=>		-- divu
+					set_exec_DIVU <= '1';
+					setstate <="01";
+					next_micro_state <= div13;
+				WHEN div13	=>		-- divu
+					set_exec_DIVU <= '1';
+					setstate <="01";
+					next_micro_state <= div14;
+				WHEN div14	=>		-- divu
+					set_exec_DIVU <= '1';
+					setstate <="01";
+					next_micro_state <= div15;
+				WHEN div15	=>		-- divu
+					set_exec_DIVU <= '1';
 
 				WHEN OTHERS => null;
 			END CASE;
-		END IF;
 	END PROCESS;
 
 -----------------------------------------------------------------------------
