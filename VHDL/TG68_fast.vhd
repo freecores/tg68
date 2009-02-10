@@ -21,6 +21,14 @@
 ------------------------------------------------------------------------------
 ------------------------------------------------------------------------------
 --
+-- Revision 1.06 2009/02/10
+-- Bugfix shift and rotations opcodes when the bitcount and the data are in the same register:
+-- Example lsr.l D2,D2
+-- Thanks to Peter Graf for report
+--
+-- Revision 1.05 2009/01/26
+-- Implement missing RTR
+-- Thanks to Peter Graf for report
 --
 -- Revision 1.04 2007/12/29
 -- size improvement
@@ -64,9 +72,9 @@ entity TG68_fast is
         address           : out std_logic_vector(31 downto 0);
         data_write        : out std_logic_vector(15 downto 0);
         state_out         : out std_logic_vector(1 downto 0);
+		LDS, UDS		  : out std_logic;		
         decodeOPC         : buffer std_logic;
-		wr				  : out std_logic;
-		UDS, LDS		  : out std_logic		
+		wr				  : out std_logic
         );
 end TG68_fast;
 
@@ -217,6 +225,7 @@ architecture logic of TG68_fast is
 	signal rot_lsb        : std_logic;
 	signal rot_msb        : std_logic;
 	signal rot_XC         : std_logic;
+	signal set_rot_nop    : std_logic;
 	signal rot_nop        : std_logic;
     signal rot_out        : std_logic_vector(31 downto 0);
     signal rot_bits       : std_logic_vector(1 downto 0);
@@ -306,6 +315,8 @@ architecture logic of TG68_fast is
 	
     signal set_directSR	  : std_logic;
     signal directSR	      : std_logic;
+    signal set_directCCR  : std_logic;
+    signal directCCR	  : std_logic;
     signal set_stop	      : std_logic;
     signal stop	          : std_logic;
     signal trap_vector    : std_logic_vector(31 downto 0);
@@ -614,6 +625,7 @@ process (clk, reset, opcode, TG68_PC, TG68_PC_dec, TG68_PC_br8, TG68_PC_brw, PC_
 			TG68_PC_dec <= "00";
 			directPC <= '0';
 			directSR <= '0';
+			directCCR <= '0';
 			stop <= '0';
 			exec_ADD <= '0';
 			exec_OR <= '0';
@@ -634,6 +646,7 @@ process (clk, reset, opcode, TG68_PC, TG68_PC_dec, TG68_PC_br8, TG68_PC_brw, PC_
 			exec_CPMAW <= '0';
 			mem_byte <= '0';
 			rot_cnt <="000001";
+			rot_nop <= '0';
 			get_extendedOPC <= '0';
 			get_bitnumber <= '0';
 			get_movem_mask <= '0';
@@ -700,9 +713,11 @@ process (clk, reset, opcode, TG68_PC, TG68_PC_dec, TG68_PC_br8, TG68_PC_brw, PC_
 				execOPC <= '0';
 				exec_EXT <= '0';
 				exec_Scc <= '0';
+				rot_nop <= '0';
 				decodeOPC <= fetchOPC;
 				directPC <= set_directPC;
 				directSR <= set_directSR;
+				directCCR <= set_directCCR;
 				exec_MULU <= set_exec_MULU;
 				exec_DIVU <= set_exec_DIVU;
 				movepl <= '0';
@@ -750,6 +765,8 @@ process (clk, reset, opcode, TG68_PC, TG68_PC_dec, TG68_PC_br8, TG68_PC_brw, PC_
 						exec_SBCD <= set_exec_SBCD;
 						exec_Scc <= set_exec_Scc;
 						exec_CPMAW <= set_exec_CPMAW;
+						rot_nop <= set_rot_nop;
+
 					END IF;
 				ELSE
 					IF endOPC='0' AND (setnextpass='1' OR (regdirectsource='1' AND decodeOPC='1')) THEN
@@ -1115,6 +1132,9 @@ PROCESS (clk, reset, opcode)
 				IF directSR='1' THEN
 					Flags <= data_read(15 downto 0);
 				END IF;	
+				IF directCCR='1' THEN
+					Flags(7 downto 0) <= data_read(7 downto 0);
+				END IF;	
 				IF interrupt='1' THEN
 					Flags(10 downto 8) <=rIPL_nr;
 					SVmode <= '1';
@@ -1221,7 +1241,7 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, nextp
 		ea_build <= '0';
 		get_ea_now <= '0';
 		rot_bits <= "XX";
-		rot_nop <= '0';
+		set_rot_nop <= '0';
 		set_rot_cnt <= "000001";
 		set_movem_busy <= '0';
 		set_get_movem_mask <= '0';
@@ -1257,6 +1277,7 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, nextp
 		set_vectoraddr <='0';
 		writeSR <= '0';
 		set_directSR <= '0';
+		set_directCCR <= '0';
 		set_stop <= '0';
 		from_SR <= '0';
 		to_SR <= '0';
@@ -2011,6 +2032,18 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, nextp
 											trapmake <= '1';
 										END IF;
 										
+									WHEN "1110111" =>  									--rtr
+										IF decodeOPC='1' THEN
+											datatype <= "01";
+											setstate <= "10";
+											postadd <= '1';
+											setstackaddr <= '1';
+											set_mem_rega <= '1';
+											set_directCCR <= '1';	
+											next_micro_state <= rte;
+										END IF;
+									
+									
 									WHEN OTHERS =>	
 										trap_illegal <= '1';
 										trapmake <= '1';
@@ -2418,8 +2451,8 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, nextp
 						IF opcode(5)='1' THEN
 							IF OP2out(5 downto 0)/="000000" THEN
 								set_rot_cnt <= OP2out(5 downto 0);
---							ELSE
---								set_no_Flags <='1';
+							ELSE
+								set_rot_nop <= '1';
 							END IF;
 						ELSE
 							set_rot_cnt(2 downto 0) <= opcode(11 downto 9);
@@ -2432,10 +2465,7 @@ PROCESS (clk, reset, OP2out, opcode, fetchOPC, decodeOPC, execOPC, endOPC, nextp
 					END IF;	
 				END IF;	
 				IF opcode(7 downto 6)/="11" THEN
-					IF opcode(5)='1' AND OP2out(5 downto 0)="000000" THEN		--Macht Fehler wenn mit sich selbst geschoben wird
---						no_Flags <= '1';
-						rot_nop <= '1';
-					ELSIF execOPC='1' THEN
+					IF execOPC='1' AND rot_nop='0' THEN
 						Regwrena <= '1';
 						set_rot_cnt <= rot_cnt-1;
 					END IF;	
